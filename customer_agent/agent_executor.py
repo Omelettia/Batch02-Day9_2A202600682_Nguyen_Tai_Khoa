@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from uuid import uuid4
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -40,39 +41,10 @@ class CustomerAgentExecutor(AgentExecutor):
         await updater.start_work()
 
         try:
-            # Build a per-request graph so the tool closure captures this request's IDs
-            graph = build_graph(
-                trace_id=trace_id,
-                context_id=context_id,
-                depth=depth,
-            )
-
-            result = await graph.ainvoke(
-                {"messages": [HumanMessage(content=question)]},
-                config={"configurable": {"thread_id": context_id}},
-            )
-
-            # Extract the last AI message from the result
-            answer = ""
-            for msg in reversed(result.get("messages", [])):
-                if hasattr(msg, "content") and msg.content:
-                    if not isinstance(msg, HumanMessage):
-                        # Skip ToolMessages, only want final AIMessage
-                        from langchain_core.messages import AIMessage
-                        if isinstance(msg, AIMessage):
-                            answer = msg.content
-                            break
-
-            if not answer:
-                # Fallback: any non-human message content
-                for msg in reversed(result.get("messages", [])):
-                    content = getattr(msg, "content", "")
-                    if content and not isinstance(msg, HumanMessage):
-                        answer = content
-                        break
-
-            if not answer:
-                answer = "I was unable to process your legal question at this time."
+            if self._should_delegate_directly():
+                answer = await self._delegate_directly(question, context_id, trace_id, depth)
+            else:
+                answer = await self._run_customer_agent(question, context_id, trace_id, depth)
 
             await updater.add_artifact(
                 parts=[Part(root=TextPart(text=answer))],
@@ -93,6 +65,70 @@ class CustomerAgentExecutor(AgentExecutor):
         context_id = context.context_id or str(uuid4())
         updater = TaskUpdater(event_queue, task_id, context_id)
         await updater.cancel()
+
+    async def _run_customer_agent(
+        self,
+        question: str,
+        context_id: str,
+        trace_id: str,
+        depth: int,
+    ) -> str:
+        """Run the original Customer ReAct agent from the codelab."""
+        graph = build_graph(
+            trace_id=trace_id,
+            context_id=context_id,
+            depth=depth,
+        )
+
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage(content=question)]},
+            config={"configurable": {"thread_id": context_id}},
+        )
+
+        for msg in reversed(result.get("messages", [])):
+            if isinstance(msg, AIMessage) and msg.content:
+                return msg.content
+
+        for msg in reversed(result.get("messages", [])):
+            content = getattr(msg, "content", "")
+            if content and not isinstance(msg, HumanMessage):
+                return content
+
+        return "I was unable to process your legal question at this time."
+
+    async def _delegate_directly(
+        self,
+        question: str,
+        context_id: str,
+        trace_id: str,
+        depth: int,
+    ) -> str:
+        """Bypass Customer LLM tool-calling for free models that skip tool use."""
+        from common.a2a_client import delegate
+        from common.registry_client import discover
+
+        logger.info(
+            "CustomerAgent delegating directly | trace=%s context=%s depth=%d",
+            trace_id, context_id, depth,
+        )
+        endpoint = await discover("legal_question")
+        answer = await delegate(
+            endpoint=endpoint,
+            question=question,
+            context_id=context_id,
+            trace_id=trace_id,
+            depth=depth + 1,
+        )
+        return answer or "The Law Agent returned an empty response. Please try again."
+
+    @staticmethod
+    def _should_delegate_directly() -> bool:
+        direct_flag = os.getenv("CUSTOMER_DIRECT_DELEGATE", "").lower()
+        if direct_flag in {"1", "true", "yes", "on"}:
+            return True
+        if direct_flag in {"0", "false", "no", "off"}:
+            return False
+        return os.getenv("OPENROUTER_MODEL", "").lower() == "openrouter/free"
 
     @staticmethod
     def _extract_question(context: RequestContext) -> str:

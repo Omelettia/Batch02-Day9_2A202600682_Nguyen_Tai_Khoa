@@ -81,6 +81,31 @@ LEGAL_KNOWLEDGE = [
             "public interest (Winter v. Natural Resources Defense Council, 2008)."
         ),
     },
+    {
+        "id": "labor_law",
+        "keywords": [
+            "lao động",
+            "lao dong",
+            "lao",
+            "động",
+            "dong",
+            "sa thải",
+            "sa thai",
+            "sa",
+            "thải",
+            "thai",
+            "hợp đồng lao động",
+            "hop dong lao dong",
+            "labor",
+            "termination",
+        ],
+        "text": (
+            "Theo Bộ luật Lao động Việt Nam 2019, người sử dụng lao động có thể "
+            "đơn phương chấm dứt hợp đồng trong các trường hợp: (1) người lao động "
+            "thường xuyên không hoàn thành công việc; (2) bị ốm đau, tai nạn đã điều trị "
+            "12 tháng chưa khỏi; (3) thiên tai, hỏa hoạn; (4) người lao động đủ tuổi nghỉ hưu."
+        ),
+    },
 ]
 
 
@@ -135,7 +160,26 @@ def calculate_damages(breach_type: str, contract_value: float) -> str:
     )
 
 
-TOOLS = [search_legal_database, calculate_damages]
+@tool
+def check_statute_of_limitations(case_type: str) -> str:
+    """Check the statute of limitations for a legal case type."""
+    case_type_lower = case_type.lower()
+    if any(term in case_type_lower for term in ["contract", "breach", "agreement", "nda", "non-disclosure"]):
+        return "4 nam (UCC Section 2-725)"
+    if "tort" in case_type_lower:
+        return "2-3 nam tuy bang"
+    if "property" in case_type_lower:
+        return "5 nam"
+
+    limits = {
+        "contract": "4 nam (UCC Section 2-725)",
+        "tort": "2-3 nam tuy bang",
+        "property": "5 nam",
+    }
+    return limits.get(case_type_lower, "Khong xac dinh")
+
+
+TOOLS = [search_legal_database, calculate_damages, check_statute_of_limitations]
 
 QUESTION = "What are the legal consequences if a company breaches a non-disclosure agreement?"
 
@@ -146,7 +190,8 @@ async def main():
     print("=" * 70)
     print()
     print("[How it works]")
-    print("  1. LLM receives tools (search_legal_database, calculate_damages)")
+    print("  1. LLM receives tools (search_legal_database, calculate_damages,")
+    print("     check_statute_of_limitations)")
     print("  2. LLM decides which tools to call and with what arguments")
     print("  3. We execute the tools and feed results back to the LLM")
     print("  4. LLM generates a final answer grounded in retrieved data")
