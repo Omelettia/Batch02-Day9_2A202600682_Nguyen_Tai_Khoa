@@ -1,4 +1,4 @@
-# Answer_2A202600682
+# Lab-Solution
 
 ## Phan 1: Direct LLM Calling
 
